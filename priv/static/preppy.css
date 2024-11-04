@@ -1,0 +1,168 @@
+* {
+    color: #1e1e1e;
+    font-family: system-ui;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-size: 1rem;
+}
+
+h1 {
+    font-size: 2rem;
+}
+
+button,
+#load-recipe-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+
+    background-color: unset;
+    border: solid 1px #1e1e1e;
+    cursor: pointer;
+    outline: none;
+    padding: 0.5rem;
+
+    min-width: 9rem;
+
+    transition:
+        background-color ease-in-out 0.2s,
+        width ease-in-out 0.2s;
+
+    &.waiting,
+    &.success,
+    &.failure {
+        cursor: default;
+    }
+
+    &.success {
+        background-color: #ddf5d5;
+    }
+
+    &.failure {
+        background-color: #f5dbd5;
+    }
+}
+
+.conversion-rate {
+    font-size: 80%;
+    font-style: italic;
+}
+
+.recipe-title {
+    display: inline-block;
+    font-weight: 800;
+    padding: 0.5rem;
+}
+
+.recipe-table {
+    border-collapse: collapse;
+}
+
+td,
+th {
+    padding: 0.5rem 0.5rem;
+    border-bottom: 1px solid black;
+}
+
+.input-cell.disabled {
+    background-color: #f4f4f4 !important;
+}
+
+.input-cell {
+}
+
+.input-cell:hover {
+    outline: none;
+    background-color: #ffddfb;
+}
+
+.input-cell:focus {
+    outline: none;
+    background-color: #ffddfb;
+}
+
+.input-cell.invalid,
+.input-cell:focus.invalid {
+    background-color: #ff9481;
+}
+
+.input-cell,
+.input-cell:hover,
+.input-cell:focus {
+    transition: background-color ease-in-out 0.2s;
+}
+
+.outer-container {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    min-height: 100vh;
+    min-height: -webkit-fill-available;
+}
+
+footer {
+    flex-shrink: 0;
+    padding: 0.5rem;
+    text-align: center;
+    color: #aaa;
+
+    display: flex;
+    flex-direction: row;
+    gap: 0.5rem;
+    justify-content: center;
+}
+
+footer * {
+    font-size: 80%;
+    color: #aaa;
+    vertical-align: bottom;
+}
+
+.main-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1rem;
+
+    flex-grow: 1;
+
+    width: 100%;
+    max-width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+
+    @media (width >= 600px) {
+        max-width: 30rem;
+    }
+}
+
+.controls-container {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 1rem;
+}
+
+.controls-group {
+    display: flex;
+    flex-direction: row;
+    gap: 1rem;
+
+    & > * {
+        flex-grow: 1;
+    }
+}
+
+@media print {
+    .no-print,
+    .no-print * {
+        display: none !important;
+    }
+}
+
+.icon {
+    width: 1rem;
+}
