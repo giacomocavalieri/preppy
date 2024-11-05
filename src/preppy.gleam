@@ -1,8 +1,5 @@
 import decode/zero
-import gleam/bool
 import gleam/dynamic.{type Dynamic}
-import gleam/float
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -13,8 +10,14 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
-import preppy/array.{type Array}
+import preppy/array
+import preppy/float_extra.{HideDecimalPartIfZero, KeepDecimalPart}
 import preppy/icon
+import preppy/recipe.{
+  type Ingredient, type Input, type Recipe, Computed, Empty, Ingredient, Invalid,
+  Recipe, Valid,
+}
+import preppy/string_extra
 
 const recipe_localstore_key = "recipe"
 
@@ -30,7 +33,7 @@ pub fn main() {
   // been saved in the local store, otherwise we just use a placeholder recipe.
   let recipe =
     get_item(recipe_localstore_key)
-    |> recipe_from_string
+    |> recipe.from_string
     |> result.lazy_unwrap(placeholder_recipe)
 
   let initial_state = #(recipe, clipboard_capabilities)
@@ -61,21 +64,6 @@ pub type Outcome {
   Success
   Waiting
   Failure
-}
-
-type Recipe {
-  Recipe(title: String, ingredients: Array(Ingredient))
-}
-
-type Ingredient {
-  Ingredient(name: String, quantity: Input(Float), converted: Input(Float))
-}
-
-type Input(a) {
-  Empty
-  Valid(raw: String, parsed: a)
-  Invalid(raw: String)
-  Computed(value: a)
 }
 
 fn placeholder_recipe() -> Recipe {
@@ -129,47 +117,6 @@ type Msg {
   UserChangedIngredientConversion(index: Int, quantity: String)
 }
 
-fn add_empty_ingredient(model: Model) -> Model {
-  let ingredients =
-    array.append(model.recipe.ingredients, Ingredient("", Empty, Empty))
-  Model(..model, recipe: Recipe(..model.recipe, ingredients:))
-}
-
-fn map_ingredients(
-  model: Model,
-  with fun: fn(Ingredient) -> Ingredient,
-) -> Model {
-  let ingredients = array.map(model.recipe.ingredients, fun)
-  Model(..model, recipe: Recipe(..model.recipe, ingredients:))
-}
-
-fn map_ingredient(
-  in model: Model,
-  at index: Int,
-  with fun: fn(Ingredient) -> Ingredient,
-) -> Model {
-  let ingredients = array.update(model.recipe.ingredients, index, fun)
-  Model(..model, recipe: Recipe(..model.recipe, ingredients:))
-}
-
-fn replace_converted(
-  ingredient: Ingredient,
-  converted: Input(Float),
-) -> Ingredient {
-  Ingredient(..ingredient, converted:)
-}
-
-fn apply_conversion(
-  ingredient: Ingredient,
-  conversion_rate: Float,
-) -> Ingredient {
-  case ingredient.quantity {
-    Empty | Invalid(_) -> ingredient
-    Computed(value:) | Valid(raw: _, parsed: value) ->
-      Ingredient(..ingredient, converted: Computed(value *. conversion_rate))
-  }
-}
-
 fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
     UserClickedClear -> {
@@ -178,10 +125,10 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(model, save_recipe_to_localstore(model.recipe))
     }
 
-    UserClickedAddIngredient -> #(
-      add_empty_ingredient(model),
-      focus_last_ingredient(),
-    )
+    UserClickedAddIngredient -> {
+      let recipe = recipe.add_empty_ingredient(model.recipe)
+      #(Model(..model, recipe:), focus_last_ingredient())
+    }
 
     UserChoseRecipeToLoad(file) -> #(
       Model(..model, load_outcome: Some(Waiting)),
@@ -189,19 +136,19 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     FileReaderReadRecipe(recipe:) ->
-      case result.then(recipe, recipe_from_string) {
-        Ok(recipe) -> #(
-          Model(
-            ..model,
-            recipe:,
-            load_outcome: Some(Success),
-            conversion_rate: Empty,
-          ),
-          effect.batch([
+      case result.then(recipe, recipe.from_string) {
+        Ok(recipe) -> {
+          let load_outcome = Some(Success)
+          let model =
+            Model(..model, recipe:, load_outcome:, conversion_rate: Empty)
+          let effects = [
             save_recipe_to_localstore(recipe),
             after_seconds(1, LoadRecipeOutcomeExpired),
-          ]),
-        )
+          ]
+
+          #(model, effect.batch(effects))
+        }
+
         Error(_) -> #(
           Model(..model, load_outcome: Some(Failure)),
           after_seconds(1, LoadRecipeOutcomeExpired),
@@ -215,12 +162,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     UserClickedSaveRecipe -> #(
       model,
-      download(model.recipe.title, recipe_to_string(model.recipe)),
+      download(model.recipe.title, recipe.to_string(model.recipe)),
     )
 
     UserClickedCopyRecipe -> #(
       Model(..model, copy_outcome: Some(Waiting)),
-      write_clipboard(recipe_to_string(model.recipe)),
+      write_clipboard(recipe.to_string(model.recipe)),
     )
 
     ClipboardPerformedCopyRecipe(outcome) -> #(
@@ -239,19 +186,19 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     ClipboardPastedRecipe(recipe:) ->
-      case result.then(recipe, recipe_from_string) {
-        Ok(recipe) -> #(
-          Model(
-            ..model,
-            recipe:,
-            conversion_rate: Empty,
-            paste_outcome: Some(Success),
-          ),
-          effect.batch([
+      case result.then(recipe, recipe.from_string) {
+        Ok(recipe) -> {
+          let paste_outcome = Some(Success)
+          let model =
+            Model(..model, recipe:, conversion_rate: Empty, paste_outcome:)
+          let effects = [
             save_recipe_to_localstore(recipe),
             after_seconds(1, PasteRecipeOutcomeExpired),
-          ]),
-        )
+          ]
+
+          #(model, effect.batch(effects))
+        }
+
         Error(_) -> #(
           Model(..model, paste_outcome: Some(Failure)),
           after_seconds(1, PasteRecipeOutcomeExpired),
@@ -264,18 +211,18 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     UserChangedConversionRate(rate: raw) ->
-      case float_lenient_parse(raw) {
+      case float_extra.lenient_parse(raw) {
         Error(_) -> {
-          let model = map_ingredients(model, replace_converted(_, Empty))
-          let model = Model(..model, conversion_rate: Invalid(raw:))
+          let recipe = recipe.empty_all_converted(model.recipe)
+          let model = Model(..model, recipe:, conversion_rate: Invalid(raw:))
           #(model, effect.none())
         }
 
         Ok(value) -> {
-          let model = map_ingredients(model, apply_conversion(_, value))
+          let recipe =
+            recipe.convert_all_ingredients(model.recipe, using: value)
           let conversion_rate = Valid(raw:, parsed: value)
-          let model = Model(..model, conversion_rate:)
-          #(model, effect.none())
+          #(Model(..model, recipe:, conversion_rate:), effect.none())
         }
       }
 
@@ -291,8 +238,8 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         // able to change the conversion quantity, se we just empty the
         // conversion field.
         Invalid(_) | Empty -> {
-          let model = map_ingredient(model, index, replace_converted(_, Empty))
-          #(model, effect.none())
+          let recipe = recipe.empty_converted(model.recipe, index)
+          #(Model(..model, recipe:), effect.none())
         }
 
         // If there's an original value we need to come up with the new
@@ -300,28 +247,26 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         Computed(value: original_value) | Valid(_, parsed: original_value) -> {
           case parse_float_field(quantity) {
             Empty -> {
-              let model = map_ingredients(model, replace_converted(_, Empty))
-              let model = Model(..model, conversion_rate: Empty)
-              #(model, effect.none())
+              let recipe = recipe.empty_all_converted(model.recipe)
+              #(Model(..model, recipe:, conversion_rate: Empty), effect.none())
             }
 
             Computed(_) as converted | Invalid(_) as converted -> {
-              let model =
-                map_ingredient(model, index, replace_converted(_, converted))
-              #(model, effect.none())
+              let recipe = recipe.set_converted(model.recipe, index, converted)
+
+              #(Model(..model, recipe:), effect.none())
             }
 
             Valid(raw: _, parsed: final_value) as converted -> {
               let conversion_rate = final_value /. original_value
-              let model =
-                model
-                |> map_ingredients(apply_conversion(_, conversion_rate))
-                |> map_ingredient(index, replace_converted(_, converted))
 
-              let model =
-                Model(..model, conversion_rate: Computed(conversion_rate))
+              let recipe =
+                model.recipe
+                |> recipe.convert_all_ingredients(conversion_rate)
+                |> recipe.set_converted(index, converted)
 
-              #(model, effect.none())
+              let conversion_rate = Computed(conversion_rate)
+              #(Model(..model, recipe:, conversion_rate:), effect.none())
             }
           }
         }
@@ -329,19 +274,19 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     UserChangedIngredientName(index:, name:) -> {
-      let model =
-        map_ingredient(model, index, fn(ingredient) {
+      let recipe =
+        recipe.map_ingredient(model.recipe, index, fn(ingredient) {
           let name = string.replace(in: name, each: "\n", with: "")
           Ingredient(..ingredient, name:)
         })
-
+      let model = Model(..model, recipe:)
       #(model, save_recipe_to_localstore(model.recipe))
     }
 
     UserChangedIngredientOriginalQuantity(index:, quantity:) -> {
       let quantity = parse_float_field(quantity)
-      let model =
-        map_ingredient(model, index, fn(ingredient) {
+      let recipe =
+        recipe.map_ingredient(model.recipe, index, fn(ingredient) {
           let converted = case quantity, model.conversion_rate {
             Valid(raw: _, parsed: original), Computed(conversion_rate)
             | Valid(raw: _, parsed: original),
@@ -353,17 +298,17 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
           Ingredient(..ingredient, converted:, quantity:)
         })
-
-      #(model, save_recipe_to_localstore(model.recipe))
+      let model = Model(..model, recipe:)
+      #(model, save_recipe_to_localstore(recipe))
     }
   }
 }
 
 fn parse_float_field(raw: String) -> Input(Float) {
-  case float_lenient_parse(raw) {
+  case float_extra.lenient_parse(raw) {
     Ok(parsed) -> Valid(parsed:, raw:)
     Error(_) ->
-      case trim(raw) {
+      case string_extra.trim(raw) {
         "" -> Empty
         _ -> Invalid(raw)
       }
@@ -400,7 +345,7 @@ fn read_file(
 
 fn save_recipe_to_localstore(recipe: Recipe) -> Effect(msg) {
   use _dispatch <- effect.from
-  set_item(recipe_localstore_key, recipe_to_string(recipe))
+  set_item(recipe_localstore_key, recipe.to_string(recipe))
 }
 
 fn focus_last_ingredient() -> Effect(msg) {
@@ -413,63 +358,6 @@ fn after_seconds(seconds: Int, msg: msg) -> Effect(msg) {
   use dispatch <- effect.from
   use <- do_after_seconds(seconds)
   dispatch(msg)
-}
-
-// --- RECIPE STRING ENCODING/DECODING -----------------------------------------
-
-fn recipe_to_string(recipe: Recipe) -> String {
-  let Recipe(title:, ingredients:) = recipe
-
-  let ingredients =
-    array.to_list(ingredients)
-    |> list.filter_map(fn(ingredient) {
-      let Ingredient(name:, quantity:, converted: _) = ingredient
-
-      // If the ingredient has an empty name we do not add it to the list
-      // of ingredients to save.
-      use <- bool.guard(when: trim(name) == "", return: Error(Nil))
-
-      // We accept the quantity might be missing, in that case we just don't
-      // add it to the end of the line.
-      let quantity = case quantity {
-        Empty | Invalid(_) -> ""
-        Computed(value:) | Valid(raw: _, parsed: value) ->
-          ", " <> pretty_float(value, HideDecimalPartIfZero)
-      }
-      Ok("- " <> name <> quantity)
-    })
-    |> string.join(with: "\n")
-
-  title <> "\n\n# Ingredients\n" <> ingredients
-}
-
-fn recipe_from_string(string: String) -> Result(Recipe, Nil) {
-  case string.split(string, on: "\n\n# Ingredients\n") {
-    [] | [_] | [_, _, _, ..] -> Error(Nil)
-    [title, ingredients] -> {
-      use ingredients <- result.try(
-        string.split(ingredients, on: "\n")
-        |> list.try_map(ingredient_from_string),
-      )
-      Ok(Recipe(title:, ingredients: array.from_list(ingredients)))
-    }
-  }
-}
-
-fn ingredient_from_string(string: String) -> Result(Ingredient, Nil) {
-  let string = case trim(string) {
-    "-" <> string | string -> trim(string)
-  }
-
-  case string.split(string, on: ",") {
-    [] -> Error(Nil)
-    [name] -> Ok(Ingredient(name:, quantity: Empty, converted: Empty))
-    [name, quantity] -> {
-      use quantity <- result.try(float_lenient_parse(quantity))
-      Ok(Ingredient(name:, quantity: Computed(quantity), converted: Empty))
-    }
-    _ -> Error(Nil)
-  }
 }
 
 // --- VIEW --------------------------------------------------------------------
@@ -646,7 +534,8 @@ fn recipe_table_view(model: Model) -> Element(Msg) {
 
   let conversion_rate_text = case model.conversion_rate {
     Invalid(raw:) | Valid(raw:, parsed: _) -> raw
-    Computed(value:) -> pretty_float(value, HideDecimalPartIfZero)
+    Computed(value:) ->
+      float_extra.to_pretty_string(value, HideDecimalPartIfZero)
     Empty -> "1"
   }
 
@@ -786,10 +675,13 @@ fn editable_cell(
   )
 }
 
-fn pretty_quantity(quantity: Input(Float), options: PrettyOptions) -> String {
+fn pretty_quantity(
+  quantity: Input(Float),
+  options: float_extra.PrettyOptions,
+) -> String {
   case quantity {
     Invalid(raw:) | Valid(raw:, parsed: _) -> raw
-    Computed(value:) -> pretty_float(value, options)
+    Computed(value:) -> float_extra.to_pretty_string(value, options)
     Empty -> ""
   }
 }
@@ -814,65 +706,6 @@ fn on_file_upload(emit: fn(JsFile) -> msg) -> Attribute(msg) {
       file |> unsafe_super_dangerous_coerce_dont_use_me |> emit
     })
   })
-}
-
-fn float_lenient_parse(string: String) -> Result(Float, Nil) {
-  let string = trim(string) |> string.replace(each: ",", with: ".")
-  case string.starts_with(string, ".") {
-    True -> float.parse("0" <> string)
-    False ->
-      case string.ends_with(string, ".") {
-        True -> float.parse(string <> "0")
-        False ->
-          case float.parse(string) {
-            Ok(float) -> Ok(float)
-            Error(_) -> int.parse(string) |> result.map(int.to_float)
-          }
-      }
-  }
-}
-
-type PrettyOptions {
-  HideDecimalPartIfZero
-  KeepDecimalPart
-}
-
-fn pretty_float(float: Float, options: PrettyOptions) -> String {
-  let integer_part = float.truncate(float)
-  let decimal_digits = case integer_part {
-    0 -> 2
-    _ -> 1
-  }
-
-  let float_string = float.to_string(float)
-  case string.split(float_string, on: ".") {
-    [integer_part, decimals] ->
-      case string.slice(decimals, 0, decimal_digits), options {
-        "", _ -> integer_part
-
-        "0", HideDecimalPartIfZero | "00", HideDecimalPartIfZero -> integer_part
-
-        decimals, HideDecimalPartIfZero | decimals, KeepDecimalPart ->
-          integer_part <> "." <> decimals
-      }
-    _ -> float_string
-  }
-}
-
-fn trim(string: String) -> String {
-  trim_left(trim_right(string))
-}
-
-fn trim_left(string: String) -> String {
-  case string {
-    "\u{20}" <> rest | "\u{A0}" <> rest -> trim_left(rest)
-    _ -> string.trim_left(string)
-  }
-}
-
-fn trim_right(string: String) -> String {
-  trim_left(string.reverse(string))
-  |> string.reverse
 }
 
 // --- FFI ---------------------------------------------------------------------
