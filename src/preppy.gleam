@@ -217,7 +217,13 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     ClipboardPastedRecipe(result: Ok(recipe)) ->
       case uri.parse(recipe) |> result.then(request.from_uri) {
         Error(_) -> parse_recipe_string(model, recipe)
-        Ok(request) -> #(model, http_get(request, ServerSentPastedPage))
+        Ok(_request) -> parse_recipe_string(model, recipe)
+        // TODO: if that actually is a url we can use to make a request we can
+        //       then fetch. Problem is CORS will not allow this, so I should
+        //       make a server I control I can send the requests to.
+        //       Do I really want to make this? No
+        //
+        // #(model, http_get(request, ServerSentPastedPage))
       }
 
     ServerSentPastedPage(result: Ok(page)) ->
@@ -401,25 +407,25 @@ fn after_seconds(seconds: Int, msg: msg) -> Effect(msg) {
   dispatch(msg)
 }
 
-fn http_get(
-  request: Request(String),
-  to_msg: fn(Result(String, Nil)) -> msg,
-) -> Effect(msg) {
-  use dispatch <- effect.from
-
-  fetch.send(request)
-  |> promise.try_await(fetch.read_text_body)
-  |> promise.tap(fn(response) {
-    case response {
-      Ok(response) -> Ok(response.body)
-      Error(_) -> Error(Nil)
-    }
-    |> to_msg
-    |> dispatch
-  })
-
-  Nil
-}
+//fn http_get(
+//  request: Request(String),
+//  to_msg: fn(Result(String, Nil)) -> msg,
+//) -> Effect(msg) {
+//  use dispatch <- effect.from
+//
+//  fetch.send(request)
+//  |> promise.try_await(fetch.read_text_body)
+//  |> promise.tap(fn(response) {
+//    case response {
+//      Ok(response) -> Ok(response.body)
+//      Error(_) -> Error(Nil)
+//    }
+//    |> to_msg
+//    |> dispatch
+//  })
+//
+//  Nil
+//}
 
 // --- VIEW --------------------------------------------------------------------
 
