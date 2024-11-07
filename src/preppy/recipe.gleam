@@ -8,7 +8,7 @@ import preppy/float_extra.{HideDecimalPartIfZero}
 import preppy/string_extra
 
 pub type Recipe {
-  Recipe(title: String, ingredients: Array(Ingredient))
+  Recipe(name: String, ingredients: Array(Ingredient))
 }
 
 pub type Ingredient {
@@ -101,7 +101,7 @@ fn apply_conversion(
 // --- ENCODING/DECODING -------------------------------------------------------
 
 pub fn to_string(recipe: Recipe) -> String {
-  let Recipe(title:, ingredients:) = recipe
+  let Recipe(name:, ingredients:) = recipe
 
   let ingredients =
     array.to_list(ingredients)
@@ -123,7 +123,7 @@ pub fn to_string(recipe: Recipe) -> String {
     })
     |> string.join(with: "\n")
 
-  title <> "\n\n# Ingredients\n" <> ingredients
+  name <> "\n\n# Ingredients\n" <> ingredients
 }
 
 pub fn from_string(string: String) -> Result(Recipe, Nil) {
@@ -136,12 +136,12 @@ pub fn from_string(string: String) -> Result(Recipe, Nil) {
 fn parse_markdown(string: String) -> Result(Recipe, Nil) {
   case string.split(string, on: "\n\n# Ingredients\n") {
     [] | [_] | [_, _, _, ..] -> Error(Nil)
-    [title, ingredients] -> {
+    [name, ingredients] -> {
       use ingredients <- result.try(
         string.split(ingredients, on: "\n")
         |> list.try_map(parse_markdown_ingredient),
       )
-      Ok(Recipe(title:, ingredients: array.from_list(ingredients)))
+      Ok(Recipe(name:, ingredients: array.from_list(ingredients)))
     }
   }
 }
@@ -171,7 +171,7 @@ fn parse_cooklang(string: String) {
   let ingredients = parse_cooklang_ingredients(string, string, 0, [])
   case ingredients {
     [] -> Error(Nil)
-    _ -> Ok(Recipe(title: "Recipe", ingredients: array.from_list(ingredients)))
+    _ -> Ok(Recipe(name: "Recipe", ingredients: array.from_list(ingredients)))
   }
 }
 

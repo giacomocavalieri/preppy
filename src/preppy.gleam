@@ -68,7 +68,7 @@ pub type Outcome {
 
 fn placeholder_recipe() -> Recipe {
   Recipe(
-    title: "🍰 Your recipe's name",
+    name: "🍰 Your recipe's name",
     ingredients: array.from_list([
       Ingredient(name: "An ingredient", quantity: Empty, converted: Empty),
     ]),
@@ -110,7 +110,7 @@ type Msg {
   FileReaderReadRecipe(recipe: Result(String, Nil))
   LoadRecipeOutcomeExpired
 
-  UserChangedRecipeTitle(title: String)
+  UserChangedRecipeName(name: String)
   UserChangedConversionRate(rate: String)
   UserChangedIngredientName(index: Int, name: String)
   UserChangedIngredientOriginalQuantity(index: Int, quantity: String)
@@ -162,7 +162,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     UserClickedSaveRecipe -> #(
       model,
-      download(model.recipe.title, recipe.to_string(model.recipe)),
+      download(model.recipe.name, recipe.to_string(model.recipe)),
     )
 
     UserClickedCopyRecipe -> #(
@@ -226,8 +226,8 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         }
       }
 
-    UserChangedRecipeTitle(title:) -> {
-      let recipe = Recipe(..model.recipe, title:)
+    UserChangedRecipeName(name:) -> {
+      let recipe = Recipe(..model.recipe, name:)
       #(Model(..model, recipe:), save_recipe_to_localstore(recipe))
     }
 
@@ -368,8 +368,8 @@ fn view(model: Model) -> Element(Msg) {
       editable_cell(
         Enabled,
         html.h1,
-        [attribute.class("recipe-title"), on_cell_input(UserChangedRecipeTitle)],
-        [html.text(model.recipe.title)],
+        [attribute.class("recipe-title"), on_cell_input(UserChangedRecipeName)],
+        [html.text(model.recipe.name)],
       ),
       recipe_table_view(model),
       controls_view(model),
