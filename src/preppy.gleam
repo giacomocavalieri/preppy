@@ -507,7 +507,7 @@ fn load_button(outcome: Option(Outcome)) -> Element(Msg) {
   html.div([], [
     html.input([
       attribute.type_("file"),
-      attribute.accept(["text/plain"]),
+      attribute.accept(["text/plain", ".cook", ".txt", ".md"]),
       attribute.id("recipe-upload-input"),
       attribute.attribute("hidden", "true"),
       on_file_upload,
