@@ -1,5 +1,6 @@
 import gleam/bool
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import preppy/array.{type Array}
@@ -97,7 +98,7 @@ fn apply_conversion(
   }
 }
 
-// --- RECIPE STRING ENCODING/DECODING -----------------------------------------
+// --- ENCODING/DECODING -------------------------------------------------------
 
 pub fn to_string(recipe: Recipe) -> String {
   let Recipe(title:, ingredients:) = recipe
@@ -126,19 +127,26 @@ pub fn to_string(recipe: Recipe) -> String {
 }
 
 pub fn from_string(string: String) -> Result(Recipe, Nil) {
+  use <- result.lazy_or(parse_markdown(string))
+  parse_cooklang(string)
+}
+
+// --- MARKDOWN PARSING --------------------------------------------------------
+
+fn parse_markdown(string: String) -> Result(Recipe, Nil) {
   case string.split(string, on: "\n\n# Ingredients\n") {
     [] | [_] | [_, _, _, ..] -> Error(Nil)
     [title, ingredients] -> {
       use ingredients <- result.try(
         string.split(ingredients, on: "\n")
-        |> list.try_map(ingredient_from_string),
+        |> list.try_map(parse_markdown_ingredient),
       )
       Ok(Recipe(title:, ingredients: array.from_list(ingredients)))
     }
   }
 }
 
-fn ingredient_from_string(string: String) -> Result(Ingredient, Nil) {
+fn parse_markdown_ingredient(string: String) -> Result(Ingredient, Nil) {
   let string = case string_extra.trim(string) {
     "-" <> string | string -> string_extra.trim(string)
   }
@@ -153,3 +161,205 @@ fn ingredient_from_string(string: String) -> Result(Ingredient, Nil) {
     _ -> Error(Nil)
   }
 }
+
+// --- COOKLANG PARSING --------------------------------------------------------
+// Since we're just interested in the ingredients we don't have to support the
+// full spec, we can just look for ingredients and parse those.
+//
+
+fn parse_cooklang(string: String) {
+  let ingredients = parse_cooklang_ingredients(string, string, 0, [])
+  case ingredients {
+    [] -> Error(Nil)
+    _ -> Ok(Recipe(title: "Recipe", ingredients: array.from_list(ingredients)))
+  }
+}
+
+fn parse_cooklang_ingredients(
+  original: String,
+  string: String,
+  position: Int,
+  acc: List(Ingredient),
+) -> List(Ingredient) {
+  case string {
+    // We reached the end of the string, so we can return all the ingredients
+    // we munched!
+    "" -> list.reverse(acc)
+
+    // A line that starts with `--` is a comment and we just ignore it.
+    "--" <> rest -> {
+      let #(rest, position) = consume_line(rest, position + 2)
+      parse_cooklang_ingredients(original, rest, position, acc)
+    }
+
+    // We found the start of an ingredient! This is where things get tricky.
+    "@" <> rest -> {
+      echo rest
+      let position = position + 1
+      let #(rest, position, ingredient) =
+        parse_cooklang_ingredient(original, rest, position, position, None)
+
+      let acc = case ingredient {
+        Some(ingredient) -> [ingredient, ..acc]
+        None -> acc
+      }
+
+      parse_cooklang_ingredients(original, rest, position, acc)
+    }
+
+    // Otherwise we just keep munching the string until the end
+    _ -> {
+      let rest = drop_bytes(string, 1)
+      parse_cooklang_ingredients(original, rest, position + 1, acc)
+    }
+  }
+}
+
+fn parse_cooklang_ingredient(
+  original: String,
+  string: String,
+  position: Int,
+  start: Int,
+  size: Option(Int),
+) {
+  case string {
+    "{" <> rest -> {
+      let size = position - start
+      case string.trim(slice_bytes(original, start, size)) {
+        "" -> #(rest, position + 1, None)
+        name -> {
+          let #(rest, position, quantity, unit) =
+            parse_quantity_unit(original, rest, position + 1, position + 1)
+
+          let name = case unit {
+            Some(unit) -> name <> " (" <> unit <> ")"
+            None -> name
+          }
+
+          let ingredient = Ingredient(name:, quantity:, converted: Empty)
+          #(rest, position, Some(ingredient))
+        }
+      }
+    }
+
+    // The ingredient is a single word one.
+    "" | "@" <> _ | "#" <> _ | "~" <> _ -> {
+      let size = case size {
+        None -> position - start
+        Some(size) -> size
+      }
+      let ingredient = case string.trim(slice_bytes(original, start, size)) {
+        "" -> None
+        name -> Some(Ingredient(name:, quantity: Empty, converted: Empty))
+      }
+      #(string, position, ingredient)
+    }
+
+    _ -> {
+      // If the ingredient name is not over we just advance, but we cannot just
+      // drop a byte and call it a day. We also need to check if the first word
+      // after `@` is over (that is there's a whitespace or punctuation char)
+      // and keep track of its size.
+      //
+      // We must do this since we won't know if the ingredient is a multiword or
+      // single word one until we run into a new modifier or the open curly
+      // bracket (then we know it's a multiword ingredient).
+      //
+      let byte = first_byte(string)
+      let rest = drop_bytes(string, 1)
+      let is_word_end = is_punctuation(byte) || is_whitespace(byte)
+      let size = case is_word_end, size {
+        False, _ -> size
+        True, Some(_) -> size
+        True, None -> Some(position - start)
+      }
+      parse_cooklang_ingredient(original, rest, position + 1, start, size)
+    }
+  }
+}
+
+fn parse_quantity_unit(
+  original: String,
+  string: String,
+  start: Int,
+  position: Int,
+) -> #(String, Int, Input(Float), Option(String)) {
+  case string {
+    // We found the closing curly bracket, we take a slice of the quantity and
+    // try to parse it.
+    "}" <> rest -> {
+      let quantity = slice_bytes(original, start, position - start)
+      #(rest, position + 1, parse_to_input(quantity), None)
+    }
+
+    // Unclosed quantity, in that case we just return an empty one.
+    "" -> #(string, position, Empty, None)
+
+    // We found a `%` so we switch to unit parsing
+    "%" <> rest -> {
+      let quantity = slice_bytes(original, start, position - start)
+      let #(rest, position, unit) =
+        parse_unit(original, rest, position + 1, position + 1)
+      #(rest, position, parse_to_input(quantity), unit)
+    }
+
+    _ -> {
+      let rest = drop_bytes(string, 1)
+      parse_quantity_unit(original, rest, start, position + 1)
+    }
+  }
+}
+
+fn parse_to_input(raw: String) -> Input(Float) {
+  case string_extra.trim(raw) {
+    "" -> Empty
+    _ ->
+      case float_extra.lenient_parse(raw) {
+        Ok(parsed) -> Valid(raw:, parsed:)
+        Error(_) -> Invalid(raw:)
+      }
+  }
+}
+
+fn parse_unit(original: String, string: String, start: Int, position: Int) {
+  case string {
+    "}" <> rest -> {
+      let unit = string.trim(slice_bytes(original, start, position - start))
+      let unit = case unit {
+        "" -> None
+        unit -> Some(unit)
+      }
+      #(rest, position + 1, unit)
+    }
+
+    _ -> {
+      let rest = drop_bytes(string, 1)
+      parse_unit(original, rest, start, position + 1)
+    }
+  }
+}
+
+fn consume_line(string: String, acc: Int) -> #(String, Int) {
+  case string {
+    "\n" <> rest -> #(rest, acc + 1)
+    "" -> #(string, acc)
+    _ -> consume_line(drop_bytes(string, 1), acc + 1)
+  }
+}
+
+fn is_punctuation(string: String) -> Bool {
+  string == ","
+}
+
+fn is_whitespace(string: String) -> Bool {
+  string == " "
+}
+
+@external(javascript, "../preppy.ffi.mjs", "drop_bytes")
+fn drop_bytes(from string: String, bytes n: Int) -> String
+
+@external(javascript, "../preppy.ffi.mjs", "first_byte")
+fn first_byte(string: String) -> String
+
+@external(javascript, "../preppy.ffi.mjs", "slice_bytes")
+fn slice_bytes(string: String, from: Int, size: Int) -> String

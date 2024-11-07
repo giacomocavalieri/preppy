@@ -11,12 +11,23 @@ pub fn lenient_parse(string: String) -> Result(Float, Nil) {
     False ->
       case string.ends_with(string, ".") {
         True -> float.parse(string <> "0")
-        False ->
-          case float.parse(string) {
-            Ok(float) -> Ok(float)
-            Error(_) -> int.parse(string) |> result.map(int.to_float)
-          }
+        False -> {
+          use <- result.lazy_or(float.parse(string))
+          use <- result.lazy_or(int.parse(string) |> result.map(int.to_float))
+          parse_fraction(string)
+        }
       }
+  }
+}
+
+fn parse_fraction(string: String) -> Result(Float, Nil) {
+  case string.split(string, on: "/") {
+    [one, other] -> {
+      use one <- result.try(lenient_parse(one))
+      use other <- result.map(lenient_parse(other))
+      one /. other
+    }
+    _ -> Error(Nil)
   }
 }
 

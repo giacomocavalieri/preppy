@@ -78,3 +78,15 @@ export function do_read_clipboard(k) {
 export function is_ios() {
   return !!navigator?.userAgent?.match(/iPad|iPhone/i);
 }
+
+export function drop_bytes(string, bytes) {
+  return string.slice(bytes);
+}
+
+export function first_byte(string) {
+  return string.slice(0, 1);
+}
+
+export function slice_bytes(string, from, size) {
+  return string.slice(from, from + size);
+}
