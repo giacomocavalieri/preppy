@@ -1,4 +1,6 @@
+import decode/zero
 import gleam/bool
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -127,13 +129,14 @@ pub fn to_string(recipe: Recipe) -> String {
 }
 
 pub fn from_string(string: String) -> Result(Recipe, Nil) {
-  use <- result.lazy_or(parse_markdown(string))
-  parse_cooklang(string)
+  use <- result.lazy_or(from_markdown(string))
+  use <- result.lazy_or(from_cooklang(string))
+  from_json_ld(string)
 }
 
 // --- MARKDOWN PARSING --------------------------------------------------------
 
-fn parse_markdown(string: String) -> Result(Recipe, Nil) {
+fn from_markdown(string: String) -> Result(Recipe, Nil) {
   case string.split(string, on: "\n\n# Ingredients\n") {
     [] | [_] | [_, _, _, ..] -> Error(Nil)
     [name, ingredients] -> {
@@ -167,7 +170,7 @@ fn parse_markdown_ingredient(string: String) -> Result(Ingredient, Nil) {
 // full spec, we can just look for ingredients and parse those.
 //
 
-fn parse_cooklang(string: String) {
+fn from_cooklang(string: String) {
   let ingredients = parse_cooklang_ingredients(string, string, 0, [])
   case ingredients {
     [] -> Error(Nil)
@@ -353,6 +356,30 @@ fn is_punctuation(string: String) -> Bool {
 fn is_whitespace(string: String) -> Bool {
   string == " "
 }
+
+// --- JSON-LD PARSING ---------------------------------------------------------
+
+/// This parses the [recipe structured data](https://developers.google.com/search/docs/appearance/structured-data/recipe)
+/// from a json object.
+///
+pub fn from_json_ld(json: String) -> Result(Recipe, Nil) {
+  let ingredients_decoder = zero.list(json_ingredient_decoder())
+  let recipe_decoder = {
+    use name <- zero.field("name", zero.string)
+    use ingredients <- zero.field("recipeIngredient", ingredients_decoder)
+    zero.success(Recipe(name:, ingredients: array.from_list(ingredients)))
+  }
+
+  json.decode(json, zero.run(_, recipe_decoder))
+  |> result.nil_error
+}
+
+fn json_ingredient_decoder() -> zero.Decoder(Ingredient) {
+  use ingredient <- zero.then(zero.string)
+  zero.success(Ingredient(name: ingredient, quantity: Empty, converted: Empty))
+}
+
+// --- FFI HELPERS -------------------------------------------------------------
 
 @external(javascript, "../preppy.ffi.mjs", "drop_bytes")
 fn drop_bytes(from string: String, bytes n: Int) -> String

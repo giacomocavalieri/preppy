@@ -1,9 +1,13 @@
 import decode/zero
 import gleam/dynamic.{type Dynamic}
+import gleam/fetch
+import gleam/http/request.{type Request}
+import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import lustre
 import lustre/attribute.{type Attribute}
 import lustre/effect.{type Effect}
@@ -49,9 +53,9 @@ type Model {
     recipe: Recipe,
     conversion_rate: Input(Float),
     clipboard_capabilities: ClipboardCapabilities,
+    paste_outcome: Option(PasteOutcome),
     copy_outcome: Option(Outcome),
-    paste_outcome: Option(Outcome),
-    load_outcome: Option(Outcome),
+    load_outcome: Option(LoadOutcome),
   )
 }
 
@@ -64,6 +68,20 @@ pub type Outcome {
   Success
   Waiting
   Failure
+}
+
+pub type LoadOutcome {
+  LoadSuccess
+  LoadWaiting
+  CouldntLoad
+  LoadNotARecipe
+}
+
+pub type PasteOutcome {
+  PasteSuccess
+  PasteWaiting
+  CouldntPaste
+  PasteNotARecipe
 }
 
 fn placeholder_recipe() -> Recipe {
@@ -99,7 +117,8 @@ type Msg {
   UserClickedClear
 
   UserClickedPasteRecipe
-  ClipboardPastedRecipe(recipe: Result(String, Nil))
+  ClipboardPastedRecipe(result: Result(String, Nil))
+  ServerSentPastedPage(result: Result(String, Nil))
   PasteRecipeOutcomeExpired
 
   UserClickedCopyRecipe
@@ -107,7 +126,7 @@ type Msg {
   CopyRecipeOutcomeExpired
 
   UserChoseRecipeToLoad(file: JsFile)
-  FileReaderReadRecipe(recipe: Result(String, Nil))
+  FileReaderReadRecipe(result: Result(String, Nil))
   LoadRecipeOutcomeExpired
 
   UserChangedRecipeName(name: String)
@@ -131,28 +150,32 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     UserChoseRecipeToLoad(file) -> #(
-      Model(..model, load_outcome: Some(Waiting)),
+      Model(..model, load_outcome: Some(LoadWaiting)),
       read_file(file, FileReaderReadRecipe),
     )
 
-    FileReaderReadRecipe(recipe:) ->
-      case result.then(recipe, recipe.from_string) {
+    FileReaderReadRecipe(result: Error(_)) -> {
+      let model = Model(..model, load_outcome: Some(CouldntLoad))
+      #(model, after_seconds(1, LoadRecipeOutcomeExpired))
+    }
+
+    FileReaderReadRecipe(result: Ok(recipe)) ->
+      case recipe.from_string(recipe) {
         Ok(recipe) -> {
-          let load_outcome = Some(Success)
-          let model =
-            Model(..model, recipe:, load_outcome:, conversion_rate: Empty)
+          let conversion_rate = Empty
+          let load_outcome = Some(LoadSuccess)
+          let model = Model(..model, recipe:, load_outcome:, conversion_rate:)
           let effects = [
             save_recipe_to_localstore(recipe),
             after_seconds(1, LoadRecipeOutcomeExpired),
           ]
-
           #(model, effect.batch(effects))
         }
 
-        Error(_) -> #(
-          Model(..model, load_outcome: Some(Failure)),
-          after_seconds(1, LoadRecipeOutcomeExpired),
-        )
+        Error(_) -> {
+          let model = Model(..model, load_outcome: Some(LoadNotARecipe))
+          #(model, after_seconds(1, LoadRecipeOutcomeExpired))
+        }
       }
 
     LoadRecipeOutcomeExpired -> #(
@@ -181,28 +204,26 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     UserClickedPasteRecipe -> #(
-      Model(..model, paste_outcome: Some(Waiting)),
+      Model(..model, paste_outcome: Some(PasteWaiting)),
       paste_from_clipboard(ClipboardPastedRecipe),
     )
 
-    ClipboardPastedRecipe(recipe:) ->
-      case result.then(recipe, recipe.from_string) {
-        Ok(recipe) -> {
-          let paste_outcome = Some(Success)
-          let model =
-            Model(..model, recipe:, conversion_rate: Empty, paste_outcome:)
-          let effects = [
-            save_recipe_to_localstore(recipe),
-            after_seconds(1, PasteRecipeOutcomeExpired),
-          ]
+    ClipboardPastedRecipe(result: Error(_))
+    | ServerSentPastedPage(result: Error(_)) -> {
+      let model = Model(..model, paste_outcome: Some(CouldntPaste))
+      #(model, after_seconds(1, PasteRecipeOutcomeExpired))
+    }
 
-          #(model, effect.batch(effects))
-        }
+    ClipboardPastedRecipe(result: Ok(recipe)) ->
+      case uri.parse(recipe) |> result.then(request.from_uri) {
+        Error(_) -> parse_recipe_string(model, recipe)
+        Ok(request) -> #(model, http_get(request, ServerSentPastedPage))
+      }
 
-        Error(_) -> #(
-          Model(..model, paste_outcome: Some(Failure)),
-          after_seconds(1, PasteRecipeOutcomeExpired),
-        )
+    ServerSentPastedPage(result: Ok(page)) ->
+      case get_json_ld_script_content(page) {
+        Ok(json_script) -> parse_recipe_string(model, json_script)
+        Error(_) -> parse_recipe_string(model, page)
       }
 
     PasteRecipeOutcomeExpired -> #(
@@ -304,6 +325,26 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
+fn parse_recipe_string(model: Model, recipe: String) -> #(Model, Effect(Msg)) {
+  case recipe.from_string(recipe) {
+    Ok(recipe) -> {
+      let conversion_rate = Empty
+      let paste_outcome = Some(PasteSuccess)
+      let model = Model(..model, recipe:, conversion_rate:, paste_outcome:)
+      let effects = [
+        save_recipe_to_localstore(recipe),
+        after_seconds(1, PasteRecipeOutcomeExpired),
+      ]
+      #(model, effect.batch(effects))
+    }
+
+    Error(_) -> #(
+      Model(..model, paste_outcome: Some(PasteNotARecipe)),
+      after_seconds(1, PasteRecipeOutcomeExpired),
+    )
+  }
+}
+
 fn parse_float_field(raw: String) -> Input(Float) {
   case float_extra.lenient_parse(raw) {
     Ok(parsed) -> Valid(parsed:, raw:)
@@ -358,6 +399,26 @@ fn after_seconds(seconds: Int, msg: msg) -> Effect(msg) {
   use dispatch <- effect.from
   use <- do_after_seconds(seconds)
   dispatch(msg)
+}
+
+fn http_get(
+  request: Request(String),
+  to_msg: fn(Result(String, Nil)) -> msg,
+) -> Effect(msg) {
+  use dispatch <- effect.from
+
+  fetch.send(request)
+  |> promise.try_await(fetch.read_text_body)
+  |> promise.tap(fn(response) {
+    case response {
+      Ok(response) -> Ok(response.body)
+      Error(_) -> Error(Nil)
+    }
+    |> to_msg
+    |> dispatch
+  })
+
+  Nil
 }
 
 // --- VIEW --------------------------------------------------------------------
@@ -447,26 +508,27 @@ fn copy_button(outcome: Option(Outcome)) -> Element(Msg) {
   html.button([on_click, class], [icon, html.text(text)])
 }
 
-fn paste_button(outcome: Option(Outcome)) -> Element(Msg) {
+fn paste_button(outcome: Option(PasteOutcome)) -> Element(Msg) {
   let text = case outcome {
     None -> "paste recipe"
-    Some(Waiting) -> "pasting..."
-    Some(Failure) -> "not a recipe"
-    Some(Success) -> "pasted!"
+    Some(PasteWaiting) -> "pasting..."
+    Some(CouldntPaste) -> "couldn't paste"
+    Some(PasteNotARecipe) -> "not a recipe"
+    Some(PasteSuccess) -> "pasted!"
   }
 
   let class = case outcome {
     None -> attribute.none()
-    Some(Waiting) -> attribute.class("waiting")
-    Some(Success) -> attribute.class("success")
-    Some(Failure) -> attribute.class("failure")
+    Some(PasteWaiting) -> attribute.class("waiting")
+    Some(PasteSuccess) -> attribute.class("success")
+    Some(PasteNotARecipe) | Some(CouldntPaste) -> attribute.class("failure")
   }
 
   let icon = case outcome {
     None -> icon.clipboard([])
-    Some(Waiting) -> icon.gear([])
-    Some(Failure) -> icon.cross([])
-    Some(Success) -> icon.check([])
+    Some(PasteWaiting) -> icon.gear([])
+    Some(PasteSuccess) -> icon.check([])
+    Some(PasteNotARecipe) | Some(CouldntPaste) -> icon.cross([])
   }
 
   let on_click = case outcome {
@@ -477,26 +539,27 @@ fn paste_button(outcome: Option(Outcome)) -> Element(Msg) {
   html.button([on_click, class], [icon, html.text(text)])
 }
 
-fn load_button(outcome: Option(Outcome)) -> Element(Msg) {
+fn load_button(outcome: Option(LoadOutcome)) -> Element(Msg) {
   let text = case outcome {
     None -> "load recipe"
-    Some(Waiting) -> "loading..."
-    Some(Failure) -> "not a recipe"
-    Some(Success) -> "loaded!"
+    Some(LoadWaiting) -> "loading..."
+    Some(CouldntLoad) -> "couldn't load"
+    Some(LoadNotARecipe) -> "not a recipe"
+    Some(LoadSuccess) -> "loaded!"
   }
 
   let class = case outcome {
     None -> attribute.none()
-    Some(Waiting) -> attribute.class("waiting")
-    Some(Success) -> attribute.class("success")
-    Some(Failure) -> attribute.class("failure")
+    Some(LoadWaiting) -> attribute.class("waiting")
+    Some(CouldntLoad) | Some(LoadNotARecipe) -> attribute.class("failure")
+    Some(LoadSuccess) -> attribute.class("success")
   }
 
   let icon = case outcome {
     None -> icon.upload([])
-    Some(Waiting) -> icon.gear([])
-    Some(Failure) -> icon.cross([])
-    Some(Success) -> icon.check([])
+    Some(LoadWaiting) -> icon.gear([])
+    Some(CouldntLoad) | Some(LoadNotARecipe) -> icon.cross([])
+    Some(LoadSuccess) -> icon.check([])
   }
 
   let on_file_upload = case outcome {
@@ -742,3 +805,6 @@ fn do_read_clipboard(do: fn(Result(String, Nil)) -> Nil) -> Nil
 
 @external(javascript, "./preppy.ffi.mjs", "is_ios")
 fn is_ios() -> Bool
+
+@external(javascript, "./preppy.ffi.mjs", "get_json_ld_script_content")
+fn get_json_ld_script_content(page: String) -> Result(String, Nil)
