@@ -194,7 +194,6 @@ fn parse_cooklang_ingredients(
 
     // We found the start of an ingredient! This is where things get tricky.
     "@" <> rest -> {
-      echo rest
       let position = position + 1
       let #(rest, position, ingredient) =
         parse_cooklang_ingredient(original, rest, position, position, None)
