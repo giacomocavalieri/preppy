@@ -6,3 +6,6 @@ erl_crash.dump
 # Auto generated bundles
 priv/static/preppy.min.mjs
 priv/static/preppy.mjs
+
+# Mac stuff
+**/.DS_Store
