@@ -90,20 +90,3 @@ export function first_byte(string) {
 export function slice_bytes(string, from, size) {
   return string.slice(from, from + size);
 }
-
-export function get_json_ld_script_content(string) {
-  try {
-    let script = new DOMParser()
-      .parseFromString(string, "text/html")
-      .querySelector('script[type="application/ld+json"]').textContent;
-
-    if (script) {
-      return new $gleam.Ok(script);
-    } else {
-      return new $gleam.Error();
-    }
-  } catch (e) {
-    console.log(e);
-    return new $gleam.Error();
-  }
-}

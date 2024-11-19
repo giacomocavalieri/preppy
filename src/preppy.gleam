@@ -121,7 +121,7 @@ type Msg {
 
   UserClickedPasteRecipe
   ClipboardPastedRecipe(result: Result(String, Nil))
-  ServerSentFetchedPage(result: Result(String, Nil))
+  ServerSentFetchedJsonLd(result: Result(String, Nil))
   PasteRecipeOutcomeExpired
 
   UserClickedCopyRecipe
@@ -212,7 +212,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     ClipboardPastedRecipe(result: Error(_))
-    | ServerSentFetchedPage(result: Error(_)) -> {
+    | ServerSentFetchedJsonLd(result: Error(_)) -> {
       let model = Model(..model, paste_outcome: Some(CouldntPaste))
       #(model, after_seconds(1, PasteRecipeOutcomeExpired))
     }
@@ -228,14 +228,8 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         }
       }
 
-    ServerSentFetchedPage(result: Ok(page)) ->
-      case get_json_ld_script_content(page) {
-        Ok(json_script) -> parse_recipe(model, json_script, recipe.from_json_ld)
-        Error(_) -> {
-          let model = Model(..model, paste_outcome: Some(PasteNotARecipe))
-          #(model, after_seconds(1, PasteRecipeOutcomeExpired))
-        }
-      }
+    ServerSentFetchedJsonLd(result: Ok(json_ld)) ->
+      parse_recipe(model, json_ld, recipe.from_json_ld)
 
     PasteRecipeOutcomeExpired -> #(
       Model(..model, paste_outcome: None),
@@ -421,7 +415,7 @@ fn fetch_recipe(url: String) -> Effect(Msg) {
   // We send the request to our proxy server hosted on fly!
   let assert Ok(request) = uri.parse(proxy_server <> "/fetch/" <> encoded_url)
   let assert Ok(request) = request.from_uri(request)
-  http_get(request, ServerSentFetchedPage)
+  http_get(request, ServerSentFetchedJsonLd)
 }
 
 fn http_get(
@@ -829,6 +823,3 @@ fn do_read_clipboard(do: fn(Result(String, Nil)) -> Nil) -> Nil
 
 @external(javascript, "./preppy.ffi.mjs", "is_ios")
 fn is_ios() -> Bool
-
-@external(javascript, "./preppy.ffi.mjs", "get_json_ld_script_content")
-fn get_json_ld_script_content(page: String) -> Result(String, Nil)
