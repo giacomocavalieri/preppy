@@ -92,6 +92,18 @@ export function slice_bytes(string, from, size) {
 }
 
 export function get_json_ld_script_content(string) {
-  console.log(new DOMParser().parseFromString(string, "text/html"));
-  return new $gleam.Error();
+  try {
+    let script = new DOMParser()
+      .parseFromString(string, "text/html")
+      .querySelector('script[type="application/ld+json"]').textContent;
+
+    if (script) {
+      return new $gleam.Ok(script);
+    } else {
+      return new $gleam.Error();
+    }
+  } catch (e) {
+    console.log(e);
+    return new $gleam.Error();
+  }
 }

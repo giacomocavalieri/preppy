@@ -23,6 +23,8 @@ import preppy/recipe.{
 }
 import preppy/string_extra
 
+const proxy_server = "https://preppy-server.fly.dev"
+
 const recipe_localstore_key = "recipe"
 
 pub fn main() {
@@ -80,6 +82,7 @@ pub type LoadOutcome {
 pub type PasteOutcome {
   PasteSuccess
   PasteWaiting
+  PasteFetchingPage
   CouldntPaste
   PasteNotARecipe
 }
@@ -118,7 +121,7 @@ type Msg {
 
   UserClickedPasteRecipe
   ClipboardPastedRecipe(result: Result(String, Nil))
-  ServerSentPastedPage(result: Result(String, Nil))
+  ServerSentFetchedPage(result: Result(String, Nil))
   PasteRecipeOutcomeExpired
 
   UserClickedCopyRecipe
@@ -209,27 +212,29 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     ClipboardPastedRecipe(result: Error(_))
-    | ServerSentPastedPage(result: Error(_)) -> {
+    | ServerSentFetchedPage(result: Error(_)) -> {
       let model = Model(..model, paste_outcome: Some(CouldntPaste))
       #(model, after_seconds(1, PasteRecipeOutcomeExpired))
     }
 
     ClipboardPastedRecipe(result: Ok(recipe)) ->
       case uri.parse(recipe) |> result.then(request.from_uri) {
-        Error(_) -> parse_recipe_string(model, recipe)
-        Ok(_request) -> parse_recipe_string(model, recipe)
-        // TODO: if that actually is a url we can use to make a request we can
-        //       then fetch. Problem is CORS will not allow this, so I should
-        //       make a server I control I can send the requests to.
-        //       Do I really want to make this? No
-        //
-        // #(model, http_get(request, ServerSentPastedPage))
+        Error(_) -> parse_recipe(model, recipe, recipe.from_string)
+        // If the thing being pasted is a valid url then we want to fetch the
+        // content of the page and parse the json ld once it's loaded.
+        Ok(_request) -> {
+          let model = Model(..model, paste_outcome: Some(PasteFetchingPage))
+          #(model, fetch_recipe(recipe))
+        }
       }
 
-    ServerSentPastedPage(result: Ok(page)) ->
+    ServerSentFetchedPage(result: Ok(page)) ->
       case get_json_ld_script_content(page) {
-        Ok(json_script) -> parse_recipe_string(model, json_script)
-        Error(_) -> parse_recipe_string(model, page)
+        Ok(json_script) -> parse_recipe(model, json_script, recipe.from_json_ld)
+        Error(_) -> {
+          let model = Model(..model, paste_outcome: Some(PasteNotARecipe))
+          #(model, after_seconds(1, PasteRecipeOutcomeExpired))
+        }
       }
 
     PasteRecipeOutcomeExpired -> #(
@@ -331,8 +336,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-fn parse_recipe_string(model: Model, recipe: String) -> #(Model, Effect(Msg)) {
-  case recipe.from_string(recipe) {
+fn parse_recipe(
+  model: Model,
+  recipe: String,
+  with parser: fn(String) -> Result(Recipe, Nil),
+) -> #(Model, Effect(Msg)) {
+  case parser(recipe) {
     Ok(recipe) -> {
       let conversion_rate = Empty
       let paste_outcome = Some(PasteSuccess)
@@ -407,25 +416,33 @@ fn after_seconds(seconds: Int, msg: msg) -> Effect(msg) {
   dispatch(msg)
 }
 
-//fn http_get(
-//  request: Request(String),
-//  to_msg: fn(Result(String, Nil)) -> msg,
-//) -> Effect(msg) {
-//  use dispatch <- effect.from
-//
-//  fetch.send(request)
-//  |> promise.try_await(fetch.read_text_body)
-//  |> promise.tap(fn(response) {
-//    case response {
-//      Ok(response) -> Ok(response.body)
-//      Error(_) -> Error(Nil)
-//    }
-//    |> to_msg
-//    |> dispatch
-//  })
-//
-//  Nil
-//}
+fn fetch_recipe(url: String) -> Effect(Msg) {
+  let encoded_url = uri.percent_encode(url)
+  // We send the request to our proxy server hosted on fly!
+  let assert Ok(request) = uri.parse(proxy_server <> "/fetch/" <> encoded_url)
+  let assert Ok(request) = request.from_uri(request)
+  http_get(request, ServerSentFetchedPage)
+}
+
+fn http_get(
+  request: Request(String),
+  to_msg: fn(Result(String, Nil)) -> msg,
+) -> Effect(msg) {
+  use dispatch <- effect.from
+
+  fetch.send(request)
+  |> promise.try_await(fetch.read_text_body)
+  |> promise.tap(fn(response) {
+    case response {
+      Ok(response) -> Ok(response.body)
+      Error(_) -> Error(Nil)
+    }
+    |> to_msg
+    |> dispatch
+  })
+
+  Nil
+}
 
 // --- VIEW --------------------------------------------------------------------
 
@@ -518,6 +535,7 @@ fn paste_button(outcome: Option(PasteOutcome)) -> Element(Msg) {
   let text = case outcome {
     None -> "paste recipe"
     Some(PasteWaiting) -> "pasting..."
+    Some(PasteFetchingPage) -> "getting recipe from link..."
     Some(CouldntPaste) -> "couldn't paste"
     Some(PasteNotARecipe) -> "not a recipe"
     Some(PasteSuccess) -> "pasted!"
@@ -525,14 +543,14 @@ fn paste_button(outcome: Option(PasteOutcome)) -> Element(Msg) {
 
   let class = case outcome {
     None -> attribute.none()
-    Some(PasteWaiting) -> attribute.class("waiting")
+    Some(PasteWaiting) | Some(PasteFetchingPage) -> attribute.class("waiting")
     Some(PasteSuccess) -> attribute.class("success")
     Some(PasteNotARecipe) | Some(CouldntPaste) -> attribute.class("failure")
   }
 
   let icon = case outcome {
     None -> icon.clipboard([])
-    Some(PasteWaiting) -> icon.gear([])
+    Some(PasteWaiting) | Some(PasteFetchingPage) -> icon.gear([])
     Some(PasteSuccess) -> icon.check([])
     Some(PasteNotARecipe) | Some(CouldntPaste) -> icon.cross([])
   }

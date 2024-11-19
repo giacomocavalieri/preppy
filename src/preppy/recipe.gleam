@@ -130,8 +130,7 @@ pub fn to_string(recipe: Recipe) -> String {
 
 pub fn from_string(string: String) -> Result(Recipe, Nil) {
   use <- result.lazy_or(from_markdown(string))
-  use <- result.lazy_or(from_cooklang(string))
-  from_json_ld(string)
+  from_cooklang(string)
 }
 
 // --- MARKDOWN PARSING --------------------------------------------------------
@@ -363,18 +362,63 @@ fn is_whitespace(string: String) -> Bool {
 /// from a json object.
 ///
 pub fn from_json_ld(json: String) -> Result(Recipe, Nil) {
-  let ingredients_decoder = zero.list(json_ingredient_decoder())
-  let recipe_decoder = {
-    use name <- zero.field("name", zero.string)
-    use ingredients <- zero.field("recipeIngredient", ingredients_decoder)
-    zero.success(Recipe(name:, ingredients: array.from_list(ingredients)))
+  case json.decode(json, zero.run(_, json_ld_decoder())) {
+    Error(_) -> Error(Nil)
+    Ok(SimpleRecipe(OtherNode)) -> Error(Nil)
+    Ok(SimpleRecipe(RecipeNode(recipe))) -> Ok(recipe)
+    Ok(GraphRecipe(nodes)) ->
+      list.find_map(nodes, fn(node) {
+        case node {
+          RecipeNode(recipe) -> Ok(recipe)
+          OtherNode -> Error(Nil)
+        }
+      })
   }
-
-  json.decode(json, zero.run(_, recipe_decoder))
-  |> result.nil_error
 }
 
-fn json_ingredient_decoder() -> zero.Decoder(Ingredient) {
+type JsonLdRecipe {
+  SimpleRecipe(node: GraphNode)
+  GraphRecipe(nodes: List(GraphNode))
+}
+
+type GraphNode {
+  RecipeNode(Recipe)
+  OtherNode
+}
+
+fn json_ld_decoder() -> zero.Decoder(JsonLdRecipe) {
+  zero.one_of(
+    zero.at(["@graph"], graph_decoder())
+      |> zero.map(GraphRecipe),
+    [
+      recipe_node_decoder()
+      |> zero.map(SimpleRecipe),
+    ],
+  )
+}
+
+fn graph_decoder() -> zero.Decoder(List(GraphNode)) {
+  zero.list(zero.one_of(recipe_node_decoder(), [zero.success(OtherNode)]))
+}
+
+fn recipe_node_decoder() -> zero.Decoder(GraphNode) {
+  use type_ <- zero.field("@type", zero.string)
+  case type_ {
+    "Recipe" -> zero.map(recipe_decoder(), RecipeNode)
+    _ -> zero.failure(OtherNode, "recipe node")
+  }
+}
+
+fn recipe_decoder() -> zero.Decoder(Recipe) {
+  let ingredients = zero.list(ingredient_decoder())
+
+  use name <- zero.field("name", zero.string)
+  use ingredients <- zero.field("recipeIngredient", ingredients)
+  let ingredients = array.from_list(ingredients)
+  zero.success(Recipe(name:, ingredients:))
+}
+
+fn ingredient_decoder() -> zero.Decoder(Ingredient) {
   use ingredient <- zero.then(zero.string)
   zero.success(Ingredient(name: ingredient, quantity: Empty, converted: Empty))
 }
