@@ -1,12 +1,16 @@
 import decode/zero
+import frac
 import gleam/bool
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/regex
 import gleam/result
 import gleam/string
 import preppy/array.{type Array}
-import preppy/float_extra.{HideDecimalPartIfZero}
+import preppy/quantity.{
+  type Quantity, FloatQuantity, FractionQuantity, HideDecimalPartIfZero,
+}
 import preppy/string_extra
 
 pub type Recipe {
@@ -14,7 +18,11 @@ pub type Recipe {
 }
 
 pub type Ingredient {
-  Ingredient(name: String, quantity: Input(Float), converted: Input(Float))
+  Ingredient(
+    name: String,
+    quantity: Input(Quantity),
+    converted: Input(Quantity),
+  )
 }
 
 pub type Input(a) {
@@ -40,7 +48,7 @@ pub fn empty_all_converted(recipe: Recipe) -> Recipe {
 pub fn set_converted(
   recipe: Recipe,
   index: Int,
-  converted: Input(Float),
+  converted: Input(Quantity),
 ) -> Recipe {
   map_ingredient(recipe, index, ingredient_set_converted(_, converted))
 }
@@ -51,7 +59,7 @@ pub fn empty_converted(recipe: Recipe, index: Int) -> Recipe {
 
 pub fn convert_all_ingredients(
   recipe: Recipe,
-  using conversion_rate: Float,
+  using conversion_rate: Quantity,
 ) -> Recipe {
   map_ingredients(recipe, apply_conversion(_, conversion_rate))
 }
@@ -59,7 +67,7 @@ pub fn convert_all_ingredients(
 pub fn convert_ingredient(
   recipe: Recipe,
   index: Int,
-  using conversion_rate: Float,
+  using conversion_rate: Quantity,
 ) -> Recipe {
   map_ingredient(recipe, index, apply_conversion(_, conversion_rate))
 }
@@ -84,19 +92,21 @@ pub fn map_ingredient(
 
 fn ingredient_set_converted(
   ingredient: Ingredient,
-  converted: Input(Float),
+  converted: Input(Quantity),
 ) -> Ingredient {
   Ingredient(..ingredient, converted:)
 }
 
 fn apply_conversion(
   ingredient: Ingredient,
-  conversion_rate: Float,
+  conversion_rate: Quantity,
 ) -> Ingredient {
   case ingredient.quantity {
     Empty | Invalid(_) -> ingredient
-    Computed(value:) | Valid(raw: _, parsed: value) ->
-      Ingredient(..ingredient, converted: Computed(value *. conversion_rate))
+    Computed(value:) | Valid(raw: _, parsed: value) -> {
+      let converted = quantity.multiply(value, by: conversion_rate)
+      Ingredient(..ingredient, converted: Computed(converted))
+    }
   }
 }
 
@@ -119,7 +129,7 @@ pub fn to_string(recipe: Recipe) -> String {
       let quantity = case quantity {
         Empty | Invalid(_) -> ""
         Computed(value:) | Valid(raw: _, parsed: value) ->
-          ", " <> float_extra.to_pretty_string(value, HideDecimalPartIfZero)
+          ", " <> quantity.to_pretty_string(value, HideDecimalPartIfZero)
       }
       Ok("- " <> name <> quantity)
     })
@@ -157,7 +167,7 @@ fn parse_markdown_ingredient(string: String) -> Result(Ingredient, Nil) {
     [] -> Error(Nil)
     [name] -> Ok(Ingredient(name:, quantity: Empty, converted: Empty))
     [name, quantity] -> {
-      use quantity <- result.try(float_extra.lenient_parse(quantity))
+      use quantity <- result.try(quantity.parse(quantity))
       Ok(Ingredient(name:, quantity: Computed(quantity), converted: Empty))
     }
     _ -> Error(Nil)
@@ -284,7 +294,7 @@ fn parse_quantity_unit(
   string: String,
   start: Int,
   position: Int,
-) -> #(String, Int, Input(Float), Option(String)) {
+) -> #(String, Int, Input(Quantity), Option(String)) {
   case string {
     // We found the closing curly bracket, we take a slice of the quantity and
     // try to parse it.
@@ -311,11 +321,11 @@ fn parse_quantity_unit(
   }
 }
 
-fn parse_to_input(raw: String) -> Input(Float) {
+fn parse_to_input(raw: String) -> Input(Quantity) {
   case string_extra.trim(raw) {
     "" -> Empty
     _ ->
-      case float_extra.lenient_parse(raw) {
+      case quantity.parse(raw) {
         Ok(parsed) -> Valid(raw:, parsed:)
         Error(_) -> Invalid(raw:)
       }
@@ -420,7 +430,95 @@ fn recipe_decoder() -> zero.Decoder(Recipe) {
 
 fn ingredient_decoder() -> zero.Decoder(Ingredient) {
   use ingredient <- zero.then(zero.string)
-  zero.success(Ingredient(name: ingredient, quantity: Empty, converted: Empty))
+  zero.success(parse_ingredient(ingredient))
+}
+
+fn parse_ingredient(ingredient: String) -> Ingredient {
+  let quantity =
+    ingredient
+    |> split_words
+    |> extract_quantity
+
+  case quantity {
+    Error(Nil) ->
+      Ingredient(name: ingredient, quantity: Empty, converted: Empty)
+
+    Ok(#(quantity, None, name)) ->
+      Ingredient(name:, quantity: Computed(quantity), converted: Empty)
+
+    Ok(#(quantity, Some(unit), name)) -> {
+      let name = name <> " (" <> unit <> ")"
+      Ingredient(name:, quantity: Computed(quantity), converted: Empty)
+    }
+  }
+}
+
+type ThisOrThat(a, b) {
+  This(a)
+  That(b)
+}
+
+fn split_words(string: String) -> List(ThisOrThat(Quantity, String)) {
+  let fraction_regex = "[0-9]+/[0-9]+"
+  let float_regex = "(([0-9]*[\\.,])?[0-9]+)"
+  let number_regex = fraction_regex <> "|" <> float_regex
+  let assert Ok(regex) = regex.from_string(number_regex <> "|\\w+")
+
+  use match <- list.map(regex.scan(regex, string))
+  case quantity.parse(match.content) {
+    Ok(quantity) -> This(quantity)
+    Error(_) -> That(match.content)
+  }
+}
+
+fn extract_quantity(words: List(ThisOrThat(Quantity, String))) {
+  let is_word = fn(word) {
+    case word {
+      This(_) -> False
+      That(_) -> True
+    }
+  }
+
+  let to_string = fn(word) {
+    case word {
+      That(string) -> string
+      This(_) -> ""
+    }
+  }
+
+  // We start by dropping all words preceding a quantity
+  let #(preceding_quantity, words) = list.split_while(words, is_word)
+  let ingredient =
+    preceding_quantity
+    |> list.map(to_string)
+    |> string.join(with: " ")
+
+  case words {
+    [] -> Error(Nil)
+    [This(quantity)] -> Ok(#(quantity, None, ingredient))
+    [This(quantity), That(maybe_unit)] ->
+      Ok(#(quantity, Some(maybe_unit), ingredient))
+
+    [This(FloatQuantity(whole)), This(FractionQuantity(rest))] -> {
+      let frac =
+        frac.approximate(whole, 1000)
+        |> frac.add(rest)
+        |> FractionQuantity
+
+      Ok(#(frac, None, ingredient))
+    }
+
+    [This(FloatQuantity(whole)), This(FractionQuantity(rest)), That(maybe_unit)] -> {
+      let frac =
+        frac.approximate(whole, 1000)
+        |> frac.add(rest)
+        |> FractionQuantity
+
+      Ok(#(frac, Some(maybe_unit), ingredient))
+    }
+
+    _ -> Error(Nil)
+  }
 }
 
 // --- FFI HELPERS -------------------------------------------------------------

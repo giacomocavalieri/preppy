@@ -15,8 +15,11 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import preppy/array
-import preppy/float_extra.{HideDecimalPartIfZero, KeepDecimalPart}
 import preppy/icon
+import preppy/quantity.{
+  type PrettyOptions, type Quantity, FloatQuantity, HideDecimalPartIfZero,
+  KeepDecimalPart,
+}
 import preppy/recipe.{
   type Ingredient, type Input, type Recipe, Computed, Empty, Ingredient, Invalid,
   Recipe, Valid,
@@ -53,7 +56,7 @@ pub fn main() {
 type Model {
   Model(
     recipe: Recipe,
-    conversion_rate: Input(Float),
+    conversion_rate: Input(Quantity),
     clipboard_capabilities: ClipboardCapabilities,
     paste_outcome: Option(PasteOutcome),
     copy_outcome: Option(Outcome),
@@ -237,7 +240,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     UserChangedConversionRate(rate: raw) ->
-      case float_extra.lenient_parse(raw) {
+      case quantity.parse(raw) {
         Error(_) -> {
           let recipe = recipe.empty_all_converted(model.recipe)
           let model = Model(..model, recipe:, conversion_rate: Invalid(raw:))
@@ -271,7 +274,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         // If there's an original value we need to come up with the new
         // conversion rate and apply it to all other fields.
         Computed(value: original_value) | Valid(_, parsed: original_value) -> {
-          case parse_float_field(quantity) {
+          case parse_quantity_field(quantity) {
             Empty -> {
               let recipe = recipe.empty_all_converted(model.recipe)
               #(Model(..model, recipe:, conversion_rate: Empty), effect.none())
@@ -284,7 +287,11 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
             }
 
             Valid(raw: _, parsed: final_value) as converted -> {
-              let conversion_rate = final_value /. original_value
+              let conversion_rate =
+                FloatQuantity(
+                  quantity.to_float(final_value)
+                  /. quantity.to_float(original_value),
+                )
 
               let recipe =
                 model.recipe
@@ -310,14 +317,14 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     UserChangedIngredientOriginalQuantity(index:, quantity:) -> {
-      let quantity = parse_float_field(quantity)
+      let quantity = parse_quantity_field(quantity)
       let recipe =
         recipe.map_ingredient(model.recipe, index, fn(ingredient) {
           let converted = case quantity, model.conversion_rate {
             Valid(raw: _, parsed: original), Computed(conversion_rate)
             | Valid(raw: _, parsed: original),
               Valid(raw: _, parsed: conversion_rate)
-            -> Computed(original *. conversion_rate)
+            -> Computed(quantity.multiply(original, by: conversion_rate))
 
             _, _ -> Empty
           }
@@ -354,8 +361,8 @@ fn parse_recipe(
   }
 }
 
-fn parse_float_field(raw: String) -> Input(Float) {
-  case float_extra.lenient_parse(raw) {
+fn parse_quantity_field(raw: String) -> Input(Quantity) {
+  case quantity.parse(raw) {
     Ok(parsed) -> Valid(parsed:, raw:)
     Error(_) ->
       case string_extra.trim(raw) {
@@ -615,8 +622,7 @@ fn recipe_table_view(model: Model) -> Element(Msg) {
 
   let conversion_rate_text = case model.conversion_rate {
     Invalid(raw:) | Valid(raw:, parsed: _) -> raw
-    Computed(value:) ->
-      float_extra.to_pretty_string(value, HideDecimalPartIfZero)
+    Computed(value:) -> quantity.to_pretty_string(value, HideDecimalPartIfZero)
     Empty -> "1"
   }
 
@@ -756,13 +762,10 @@ fn editable_cell(
   )
 }
 
-fn pretty_quantity(
-  quantity: Input(Float),
-  options: float_extra.PrettyOptions,
-) -> String {
+fn pretty_quantity(quantity: Input(Quantity), options: PrettyOptions) -> String {
   case quantity {
     Invalid(raw:) | Valid(raw:, parsed: _) -> raw
-    Computed(value:) -> float_extra.to_pretty_string(value, options)
+    Computed(value:) -> quantity.to_pretty_string(value, options)
     Empty -> ""
   }
 }
